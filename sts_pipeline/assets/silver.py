@@ -1,0 +1,84 @@
+import dagster as dg
+from pyspark.sql import functions as F
+
+from sts_pipeline.assets.bronze import BRONZE_RUNS_DIR, bronze_runs
+from sts_pipeline.spark_resource import SparkResource
+
+SILVER_PICKS_DIR = "raw_data/silver/picks"
+
+FLOOR_REACHED_MIN = 5
+FLOOR_REACHED_MAX = 57  # Act 4 Heart kill
+
+
+@dg.asset(
+    deps=[bronze_runs],
+    description="One row per card-reward pick-event, filtered to standard runs and enriched with confounders.",
+)
+def silver_picks(context: dg.AssetExecutionContext, spark: SparkResource) -> dg.MaterializeResult:
+    session = spark.get_spark()
+
+    runs = session.read.format("delta").load(BRONZE_RUNS_DIR)
+
+    # Drop early-quit / non-standard-mode runs (see 00_problem_definition.ipynb: abandoned-run issue).
+    filtered = runs.filter(
+        (~F.col("is_endless"))
+        & (~F.col("is_daily"))
+        & (~F.col("is_trial"))
+        & (~F.col("chose_seed"))
+        & (F.col("floor_reached") >= FLOOR_REACHED_MIN)
+    )
+
+    # Drop custom/non-standard-mode runs: floor_reached above the max legitimate floor, or a
+    # card_choices floor beyond floor_reached (both catch the same class of anomalous runs).
+    max_pick_floor = F.array_max(F.transform("card_choices", lambda x: x["floor"]))
+    anomalous = (F.col("floor_reached") > FLOOR_REACHED_MAX) | (max_pick_floor > F.col("floor_reached"))
+    filtered = filtered.filter(~anomalous)
+
+    exploded = filtered.select(
+        "play_id", "floor_reached", "victory", "character_chosen", "ascension_level",
+        "current_hp_per_floor", "max_hp_per_floor", "relics_obtained",
+        "neow_bonus", "neow_cost", "player_experience",
+        F.posexplode("card_choices").alias("pick_num", "event"),
+    ).filter(F.col("event.floor").isNotNull())
+
+    f = F.col("event.floor").cast("int")
+    is_skip = F.col("event.picked") == "SKIP"
+
+    def hp_at_floor(arr_col):
+        # 0-based index anchored to floor_reached from the array's end: some HP arrays are
+        # shorter than floor_reached with their *last* entry still aligned to it.
+        idx = f - F.col("floor_reached") + F.size(arr_col) - 1
+        in_bounds = (idx >= 0) & (idx < F.size(arr_col))
+        return F.when(in_bounds, F.element_at(arr_col, (idx + 1).cast("int"))).otherwise(F.lit(None))
+
+    picks = exploded.select(
+        "play_id",
+        "pick_num",
+        F.when(~is_skip, F.col("event.picked")).otherwise(F.lit(None)).alias("card_selected"),
+        F.when(~is_skip, f).otherwise(F.lit(None)).alias("card_selected_floor"),
+        is_skip.alias("card_not_selected"),
+        F.when(is_skip, f).otherwise(F.lit(None)).alias("card_not_selected_floor"),
+        F.col("event.not_picked").alias("not_picked_options"),
+        "floor_reached",
+        "victory",
+        "character_chosen",
+        "ascension_level",
+        hp_at_floor(F.col("current_hp_per_floor")).alias("current_hp"),
+        hp_at_floor(F.col("max_hp_per_floor")).alias("max_hp"),
+        F.size(F.filter("relics_obtained", lambda r: r["floor"] <= f)).alias("relic_count"),
+        "neow_bonus",
+        "neow_cost",
+        "player_experience",
+    )
+
+    event_floor = F.coalesce(F.col("card_selected_floor"), F.col("card_not_selected_floor"))
+    picks = picks.withColumn("floors_gained", F.col("floor_reached") - event_floor)
+
+    picks.write.format("delta").mode("overwrite").save(SILVER_PICKS_DIR)
+
+    row_count = session.read.format("delta").load(SILVER_PICKS_DIR).count()
+    context.log.info(f"Wrote {row_count} rows to {SILVER_PICKS_DIR}")
+
+    session.stop()
+
+    return dg.MaterializeResult(metadata={"row_count": row_count, "table_path": SILVER_PICKS_DIR})

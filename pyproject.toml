@@ -1,0 +1,11 @@
+[project]
+name = "sts-pipeline"
+version = "0.1.0"
+requires-python = ">=3.13"
+
+[tool.dagster]
+module_name = "sts_pipeline.definitions"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
