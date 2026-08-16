@@ -22,6 +22,11 @@ def bronze_runs(context: dg.AssetExecutionContext, spark: SparkResource) -> dg.M
 
     events = df.select("event.*").withColumn("_source_file", input_file_name())
 
+    # Some months' landing data has monthly rollup files (e.g. november.json) that re-contain
+    # runs already present as individual per-run/per-batch files under a dated subdirectory —
+    # same play_id, identical content, different _source_file. Keep one copy per play_id.
+    events = events.dropDuplicates(["play_id"])
+
     events.write.format("delta").mode("overwrite").save(BRONZE_RUNS_DIR)
 
     row_count = session.read.format("delta").load(BRONZE_RUNS_DIR).count()

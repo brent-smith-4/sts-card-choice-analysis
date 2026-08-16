@@ -5,8 +5,8 @@ class SparkResource(dg.ConfigurableResource):
     """Creates a local Spark session configured for Delta Lake reads/writes."""
 
     app_name: str = "sts-pipeline"
-    driver_memory: str = "8g"
-    shuffle_partitions: int = 32
+    driver_memory: str = "16g"
+    shuffle_partitions: int = 100
 
     def get_spark(self):
         from delta import configure_spark_with_delta_pip
