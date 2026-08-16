@@ -5,9 +5,16 @@ from sts_pipeline.assets.bronze import BRONZE_RUNS_DIR, bronze_runs
 from sts_pipeline.spark_resource import SparkResource
 
 SILVER_PICKS_DIR = "raw_data/silver/picks"
+SILVER_CARD_OFFERS_DIR = "raw_data/silver/card_offers"
 
 FLOOR_REACHED_MIN = 5
 FLOOR_REACHED_MAX = 57  # Act 4 Heart kill
+
+CARD_OFFERS_CONFOUNDER_COLS = [
+    "floor_reached", "victory", "character_chosen", "ascension_level",
+    "current_hp", "max_hp", "relic_count", "neow_bonus", "neow_cost",
+    "player_experience", "floors_gained",
+]
 
 
 @dg.asset(
@@ -54,10 +61,9 @@ def silver_picks(context: dg.AssetExecutionContext, spark: SparkResource) -> dg.
     picks = exploded.select(
         "play_id",
         "pick_num",
-        F.when(~is_skip, F.col("event.picked")).otherwise(F.lit(None)).alias("card_selected"),
-        F.when(~is_skip, f).otherwise(F.lit(None)).alias("card_selected_floor"),
-        is_skip.alias("card_not_selected"),
-        F.when(is_skip, f).otherwise(F.lit(None)).alias("card_not_selected_floor"),
+        F.when(~is_skip, F.col("event.picked")).otherwise(F.lit(None)).alias("card"),
+        (~is_skip).alias("is_selected"),
+        f.alias("choice_floor"),
         F.col("event.not_picked").alias("not_picked_options"),
         "floor_reached",
         "victory",
@@ -71,10 +77,9 @@ def silver_picks(context: dg.AssetExecutionContext, spark: SparkResource) -> dg.
         "player_experience",
     )
 
-    event_floor = F.coalesce(F.col("card_selected_floor"), F.col("card_not_selected_floor"))
-    picks = picks.withColumn("floors_gained", F.col("floor_reached") - event_floor)
+    picks = picks.withColumn("floors_gained", F.col("floor_reached") - F.col("choice_floor"))
 
-    picks.write.format("delta").mode("overwrite").save(SILVER_PICKS_DIR)
+    picks.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(SILVER_PICKS_DIR)
 
     row_count = session.read.format("delta").load(SILVER_PICKS_DIR).count()
     context.log.info(f"Wrote {row_count} rows to {SILVER_PICKS_DIR}")
@@ -82,3 +87,49 @@ def silver_picks(context: dg.AssetExecutionContext, spark: SparkResource) -> dg.
     session.stop()
 
     return dg.MaterializeResult(metadata={"row_count": row_count, "table_path": SILVER_PICKS_DIR})
+
+
+@dg.asset(
+    deps=[silver_picks],
+    description=(
+        "One row per card offered in a card-reward screen, picked or not — long/tidy format for "
+        "choice modeling. `play_id` + `pick_num` identifies the choice occasion: exactly one row "
+        "per occasion has was_picked=True, unless was_skip (the occasion was a SKIP) is True, in "
+        "which case every row for that occasion has was_picked=False."
+    ),
+)
+def silver_card_offers(context: dg.AssetExecutionContext, spark: SparkResource) -> dg.MaterializeResult:
+    session = spark.get_spark()
+
+    picks = session.read.format("delta").load(SILVER_PICKS_DIR)
+
+    was_skip = ~F.col("is_selected")
+
+    picked = picks.filter(F.col("is_selected")).select(
+        "play_id", "pick_num",
+        F.col("card").alias("card_name"),
+        F.lit(True).alias("was_picked"),
+        was_skip.alias("was_skip"),
+        F.col("choice_floor").alias("floor"),
+        *CARD_OFFERS_CONFOUNDER_COLS,
+    )
+
+    not_picked = picks.select(
+        "play_id", "pick_num",
+        F.explode("not_picked_options").alias("card_name"),
+        F.lit(False).alias("was_picked"),
+        was_skip.alias("was_skip"),
+        F.col("choice_floor").alias("floor"),
+        *CARD_OFFERS_CONFOUNDER_COLS,
+    )
+
+    offers = picked.unionByName(not_picked)
+
+    offers.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(SILVER_CARD_OFFERS_DIR)
+
+    row_count = session.read.format("delta").load(SILVER_CARD_OFFERS_DIR).count()
+    context.log.info(f"Wrote {row_count} rows to {SILVER_CARD_OFFERS_DIR}")
+
+    session.stop()
+
+    return dg.MaterializeResult(metadata={"row_count": row_count, "table_path": SILVER_CARD_OFFERS_DIR})
