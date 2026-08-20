@@ -1,0 +1,8 @@
+dagster==1.13.18
+delta-spark==4.3.1
+lightgbm==4.7.0
+numpy==2.4.6
+pandas==3.0.3
+pyspark==4.1.1
+scikit-learn==1.9.0
+statsmodels==0.14.6

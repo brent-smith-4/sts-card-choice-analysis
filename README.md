@@ -80,7 +80,11 @@ raw_data/                landing/bronze/silver/gold data (gitignored, generated 
 
 ## Running the pipeline
 
-Requires Python 3.13+, a local JDK 17 (`.jdk17/`, gitignored — point `JAVA_HOME` at it), and Hadoop `winutils` on Windows (`HADOOP_HOME`). Key dependencies: `dagster`, `pyspark`, `delta-spark`, `pandas`, `jupyter`.
+Requires Python 3.13+, a local JDK 17 (`.jdk17/`, gitignored — point `JAVA_HOME` at it), and Hadoop `winutils` on Windows (`HADOOP_HOME`). Install dependencies with:
+
+```
+pip install -r requirements.txt
+```
 
 With raw run JSON placed under `raw_data/landing/`, materialize the full pipeline (omitting `--select` runs every asset, in dependency order):
 
