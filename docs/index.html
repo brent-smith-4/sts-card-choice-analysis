@@ -584,13 +584,17 @@
       var cardName = a.getAttribute("data-card");
       var src = imageUrlFor(cardName);
       if (!src) return;
+      // Start the fetch now, in parallel with the reveal delay below, instead of waiting
+      // for the delay to elapse first - otherwise the perceived wait is delay + network
+      // time stacked serially. By the time the delay below fires, this is usually already
+      // loaded (or served from cache on a repeat hover), so the reveal itself is instant.
+      cardPreviewImg.src = src;
+      cardPreviewName.textContent = cardName;
       previewTimer = setTimeout(function () {
         if (previewActiveEl !== a) return;
-        cardPreviewImg.src = src;
-        cardPreviewName.textContent = cardName;
         cardPreview.classList.add("visible");
         positionPreview(ev);
-      }, 450);
+      }, 220);
     });
     container.addEventListener("mousemove", function (ev) {
       if (cardPreview.classList.contains("visible")) positionPreview(ev);
