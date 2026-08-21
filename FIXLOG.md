@@ -535,6 +535,128 @@ a reason to pass through `int64` in between.
 
 ---
 
+## 7. Dashboard (`docs/index.html` / published Claude Artifact)
+
+A static, self-contained HTML page built to present notebook 04's results visually rather than as
+a raw table: per-character summary tiles, a log-scale odds-ratio chart with CI whiskers, and a
+searchable/sortable table of all significant cards. Published two places from the same source
+file, kept in sync manually: a Claude Artifact (private link) and `docs/index.html`, served
+publicly via GitHub Pages once enabled in the repo's Settings. Data (`card_win_rate_significant`/
+`_summary`) is embedded inline as JSON at build time - no server, no client-side fetch to this
+project's own data.
+
+**Why static instead of Streamlit.** Considered and rejected. Streamlit needs a running Python
+backend, which buys nothing here - every interaction (filter, sort, search, hover) is the browser
+working over data that's already fully computed; nothing needs to execute after the notebook has
+run. It would also trade a free, zero-maintenance static page for one needing a host that can run
+code, and this project doesn't even host its raw data anywhere public for a backend to compute
+against. The one thing that would genuinely need a backend - re-running a regression live against
+user-chosen parameters - isn't something either page does.
+
+**Color.** The four characters are mapped to hues validated with the dataviz skill's palette
+checker (`validate_palette.js`) for CVD-safe adjacent-pair separation in both light and dark mode,
+rather than picked freehand: `DEFECT`=blue, `IRONCLAD`=red, `WATCHER`=violet, `THE_SILENT`=aqua/
+green, in that fixed order (order matters for the adjacency check to pass) - chosen to also read
+correctly against each character's own in-game identity (fire/blood for Ironclad, poison for
+Silent, tech for Defect, mysticism for Watcher), not just because they passed validation.
+
+### 7.1 GitHub Pages showed a 404 after the initial deploy
+
+**Cause.** Not a bug - Pages has to be explicitly turned on per-repo (Settings → Pages → Source),
+and that step hadn't been done yet. Confirmed via `GET api.github.com/repos/.../pages` returning
+`has_pages: false` before the setting was saved, `200` after.
+
+### 7.2 Card names link to the wrong wiki article if guessed instead of resolved
+
+**Why not a hand-typed card→class/title lookup.** ~276 distinct base cards appear in the
+significant table; a majority are stored as PascalCase internal IDs with no spaces
+(`EmptyFist`, `HandOfGreed`, `PathToVictory`). A camelCase-splitting heuristic gets most of these
+right (`EmptyFist` → "Empty Fist") but not all of them - `PathToVictory` is actually titled
+**"Pressure Points"** on the wiki, and `Adaptation` is now titled **"Rushdown"** after a later game
+update renamed the card. Neither is derivable from the internal ID by any string transformation;
+guessing would have silently linked a meaningful fraction of cards to the wrong article, or to
+nothing.
+
+**Fix.** Resolved all 276 names against the wiki's own `action=opensearch` API at build time (not
+in the browser) and cached the verified `{card: title, url}` mapping into the page's embedded
+data. 275 of 276 resolved cleanly; the one with no matching article (`Redo`) renders as plain,
+unlinked text rather than link to something unrelated. Card art thumbnails for the hover preview
+(§7.4) were resolved the same way, via `action=query&prop=pageimages` against the same 275
+titles.
+
+### 7.3 Card art preview: Fandom's CDN blocks hotlinked image requests by `Referer`
+
+**Symptom.** `<img>` tags pointed at `static.wikia.nocookie.net` image URLs failed to load once
+published to GitHub Pages (and would have failed on the Artifact too, separately, due to its CSP -
+see the page's own comments).
+
+**Root cause.** Confirmed directly with `curl`: the same image URL returns `200` with no `Referer`
+header set, but `404` (a small placeholder image, not a real 404 page) when `Referer` is set to
+`github.io` or `claude.ai`. Browsers send `Referer` by default on `<img>` loads, so every real
+visit was hitting this block - the wiki's CDN has hotlink protection keyed on the requesting
+origin.
+
+**Fix.** Added `referrerpolicy="no-referrer"` to the preview `<img>` element, which stops the
+browser from sending a `Referer` header on that request at all - matching the `curl` case that
+returned `200`.
+
+### 7.4 First hover felt like a 1-2 second lag
+
+**Root cause, first pass.** The image fetch didn't start until *after* the reveal delay finished -
+`cardPreviewImg.src` was set inside the `setTimeout` callback, not before it. The perceived wait
+was delay-then-fetch stacked serially, not just the delay.
+
+**Fix, first pass.** Moved `cardPreviewImg.src = src` to fire immediately on `mouseover`, so the
+network fetch runs in parallel with a (shortened, 220ms) reveal delay instead of after it. By the
+time the delay elapses, the image is often already loaded.
+
+**Still slow on a genuinely cold hover.** That fix only helped once *some* hover had already
+warmed a given image in cache. `<link rel="preconnect">` to the CDN host was tried next as a cheap
+partial fix (warms the DNS/TLS handshake on page load) - explicitly flagged at the time as
+addressing only connection setup, not the actual byte transfer, and confirmed by testing to not
+be sufficient alone.
+
+**Real fix.** Added a background prefetch: once the page's own `load` event fires (plus a short
+buffer, so it doesn't compete with the page's own critical resources), every card image is
+fetched via a throwaway `new Image()` object, warming the browser's HTTP cache before any hover
+happens. First-hover cost drops to whatever's left of the prefetch queue by the time a user
+actually hovers something, which in practice is close to zero.
+
+### 7.5 The prefetch fix above broke a chunk of cards with 404s
+
+**Symptom.** After the §7.4 prefetch fix shipped, a meaningful fraction of cards - reported
+concretely with `FeelNoPain` - started 404ing, despite the exact same URL working when opened
+directly.
+
+**Root cause.** The prefetch `Image()` objects didn't set `referrerPolicy`, unlike the real
+`#cardPreviewImg` element (§7.3) - so those background requests *did* send a `Referer`, got the
+CDN's `404` placeholder, and the browser cached that failure **against the URL itself**
+(`Cache-Control: public, max-age=3600`, confirmed via `curl -D -`). HTTP caching doesn't care which
+element made the original request - once that URL is cached as a 404, the later real hover-driven
+request (which used the correct no-referrer policy) got served the cached failure instead of
+re-fetching. Whichever cards the prefetch loop reached first before the real hover did ended up
+broken for up to an hour, or until a hard cache bypass.
+
+**Fix.** Set `referrerPolicy = "no-referrer"` on the prefetch `Image()` objects too, matching
+`#cardPreviewImg`. Not a permanent block, and self-healed within the hour either way (per the
+`max-age`), but the fix removes the race entirely rather than just waiting it out.
+
+### 7.6 Native browser tooltip stacked on top of the custom preview
+
+**Symptom.** Screenshot showed two overlapping boxes on hover: a plain dark browser tooltip
+reading "Open X on the Slay the Spire Wiki" sitting on top of the custom card-art preview.
+
+**Root cause.** A `title` attribute (table links) and an SVG `<title>` element (chart labels) had
+been added specifically to give a "click to open the wiki" hint - but a `title` attribute also
+triggers the browser's own native tooltip, on its own timing, independent of and colliding with
+the custom preview's.
+
+**Fix.** Removed both. Folded the same hint ("View on wiki ↗") into the custom preview popup's own
+markup instead, so there's exactly one hover surface, fully styled and positioned by this page's
+own CSS.
+
+---
+
 ## Recurring lessons
 
 - **`groupby().apply()` + heterogeneous return branches is a repeat offender** (§4.2, §4.5).
@@ -574,3 +696,21 @@ a reason to pass through `int64` in between.
   the ratio per row before summing the parts back together produces a number that answers a
   different, wrong question, and it won't look wrong on its own; it only looks wrong once you
   check it against a case you already know the right answer for.
+- **A security/access-control setting duplicated across code paths that hit the same resource
+  will eventually be missing from one of them** (§7.5). `referrerPolicy` was set correctly on the
+  real preview `<img>` but forgotten on the background prefetch's throwaway `Image()` objects -
+  same resource, same fix needed, applied to only one of the two places that fetch it. Worth
+  grepping for every place a policy like this is set whenever a second code path is added that
+  touches the same external resource, rather than assuming it only needs to live in the
+  "main" one.
+- **A plausible, partial fix can look like the real fix until it's actually tested** (§7.4).
+  `preconnect` was a reasonable first move - cheap, low-risk, and it does help - but it was
+  explicitly flagged at the time as addressing only connection setup, not transfer time, and
+  confirmed insufficient only by testing it live rather than reasoning it should be enough.
+  Shipping the cheap partial fix first and testing before reaching for the bigger one was the
+  right sequencing here; assuming the cheap fix had fully solved it without checking would not
+  have been.
+- **Debugging a live public page benefits from a browser in the loop, not just source-reading**
+  (§7.1-§7.6). Several of this section's bugs (the CDN's Referer-based block, the prefetch cache
+  poisoning, the stacked native tooltip) were only fully confirmed via `curl` probing actual
+  response headers or a real screenshot - reading the code alone made all of them look correct.
