@@ -455,6 +455,86 @@ import path was in scope here.
 
 ---
 
+## 6. Notebook 04: off-class cards contaminating `significant` (found by inspection, not review)
+
+**How this one was found.** Not a statistical review this time - just eyeballing the published
+dashboard's Defect tab and noticing several of its top cards (`Concentrate`, `Burning Pact`,
+`Acrobatics`, `Backflip`, `Night Terror`) are cards whose home class is actually The Silent.
+Cross-checking the Ironclad/Watcher lists turned up the same pattern with their own off-class
+cards (`Twin Strike`, `Iron Wave`, `Reaper` from Ironclad; `All Out Attack`, `EmptyFist`,
+`FlyingSleeves` from Watcher).
+
+**Root cause.** Not a bug - **Prismatic Shard**, an in-game relic, changes every reward screen to
+show one card from *each* class instead of three from your own. A run holding it can genuinely be
+offered and pick a card whose home class isn't the character being played. Those rows are real
+data, but they're confounded with "this run had Prismatic Shard" - a strong, uncontrolled-for
+factor (nothing here models relic *identity*, only `relic_count`) - so an off-class card's odds
+ratio is plausibly picking up "this was an unusual, deliberate Prismatic Shard build" more than
+any causal effect of the card itself. Reporting it next to a card's native-class effect, with the
+same interpretation, is misleading.
+
+**Why a hand-curated card→class list wasn't used.** The obvious fix is a lookup table of all
+~300 base cards to their class, filtering out rows where `character_chosen` doesn't match. That
+would mean typing ~300 card/class pairs from memory into the codebase, with no cross-check - a
+real chance of silently mis-classifying some card and getting a wrong answer with high confidence.
+
+**The data has a cleaner answer.** `results_pd["n"]` already gives an offer count for every
+`(character, card)` pair. Aggregating each *base* card (`+1` and non-`+1` summed together) by
+character and looking at what share of its total offers each character holds turned up a sharp,
+empirical, three-way split with nothing in between:
+- **<0.5% share** - either off-class (Prismatic Shard) or a one-off modded-content card name that
+  leaked into the raw data (checked separately: names like `ReplayTheSpireMod:...`,
+  `expansioncontent:...` at `n` in the single-to-low-double digits - the community-mod-run
+  contamination is real too, just already filtered out downstream by `MIN_REGRESSION_ROWS`).
+- **>15% share** - either the card's native class, or a colorless card (available to all four,
+  split roughly by how often each character gets played - Ironclad ~35%, Silent ~25%, Defect
+  ~23%, Watcher ~16% was the actual observed split, not an even 25/25/25/25).
+- **Nothing between 0.5% and 15%**, across the full results set (verified directly, not assumed).
+
+That gap means any threshold in it works; 5% was picked as a round number safely inside it.
+
+**Fix.** Added a `native_pool` boolean column to `results_pd` (character's share of its base
+card's total offers `>= 0.05`) and added it as a fourth bar to `significant`'s filter, alongside
+`converged`, `was_picked_qvalue < 0.05`, and the `[0.9, 1.1]` effect-size floor. Off-class and
+colorless cards are treated identically here (both pass at their real share), so colorless cards
+are correctly still included as legitimate for whichever character(s) show real, non-sliver offer
+volume - only the genuine off-class sliver rows get dropped.
+
+**A mistake caught mid-implementation, not shipped.** The first version of this check computed
+`share` per exact `card_name` (i.e. `"Burning Pact"` and `"Burning Pact+1"` as two independent
+rows) instead of aggregating base+upgraded together first. That produced a false positive: several
+real colorless cards (`Magnetism`, `Panache`, `Apotheosis`, `HandOfGreed`...) looked like an
+"ambiguous middle" case, because a card's `+1` row alone can be a small slice of its own combined
+total even when the *character* holding it is legitimate. Re-aggregating by `(base_card,
+character_chosen)` before computing shares fixed it and produced the clean three-way split above.
+Included here because it's a real instance of the same "aggregate before you divide" mistake, not
+because it ever reached `results_pd`.
+
+**Not re-run as part of this pass.** Like §4.6-§4.9, this was applied as a notebook source edit;
+re-executing to get a real post-filter `significant` count is on the user.
+
+### 6.1 `MemoryError` on the retry, caused by a redundant upcast in `load_win_rate_regression_input`
+
+**Symptom.** Re-running notebook 04 after §6's edit failed immediately on
+`regression_pd["victory"] = regression_pd["victory"].astype(int)`, unable to allocate 1.72GB for
+a plain `int64` array.
+
+**Root cause.** `load_win_rate_regression_input` cast `was_picked`/`victory` to `int` (i.e.
+`int64`) unconditionally, then downcast them to `int8` a few lines later - a leftover from the
+original notebook cell, carried over verbatim during the §4.9 split without questioning why it
+was there. That round-trip was harmless back when the cached parquet stored these columns as
+`int64` or `bool` to begin with (the upcast was a no-op or near-no-op in size). It stopped being
+harmless once the cache itself was already `int8` (from an earlier downcast-and-save cycle,
+per §4.9's cache-corruption note) - at that point `.astype(int)` was actively *widening* an
+already-narrow 230M-row column back out to `int64` (~1.72GB) for no reason, right before shrinking
+it straight back down again.
+
+**Fix.** Removed the intermediate `.astype(int)` calls entirely. `.astype("int8")` works directly
+from whatever the source dtype actually is (`bool`, `int8`, `int16`, or `int64`) - there was never
+a reason to pass through `int64` in between.
+
+---
+
 ## Recurring lessons
 
 - **`groupby().apply()` + heterogeneous return branches is a repeat offender** (§4.2, §4.5).
@@ -480,3 +560,17 @@ import path was in scope here.
   looks at noisy data biases whichever one you keep) applies one step later, at the
   significance-filtering step, and needs to be applied there deliberately rather than assumed to
   carry over.
+- **Not every issue surfaces from a code or statistics review — some only show up once the
+  results are actually looked at** (§6). The off-class contamination was invisible in the fitting
+  code (nothing crashed) and invisible in the statistical review (nothing about a converged,
+  FDR-significant, large-effect-size Prismatic Shard pick looks statistically wrong) - it only
+  became visible by reading the actual card names in a real output and recognizing one didn't
+  belong. Worth remembering that "the numbers check out" and "the result makes domain sense"
+  are different checks, and this project's domain (a specific, well-known game) makes the second
+  one cheap to do by eye.
+- **Aggregate before you divide, every time a rate or share is computed** (§6's mid-implementation
+  mistake, same family as §4.2/§4.5's key-consistency bug). A card split across a base and `+1`
+  row is one entity for the purpose of "what share of offers went to this character" - computing
+  the ratio per row before summing the parts back together produces a number that answers a
+  different, wrong question, and it won't look wrong on its own; it only looks wrong once you
+  check it against a case you already know the right answer for.

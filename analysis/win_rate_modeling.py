@@ -100,9 +100,6 @@ def load_win_rate_regression_input(parquet_path: str) -> pd.DataFrame:
     regression_pd = table.to_pandas(self_destruct=True)
     del table
 
-    regression_pd["was_picked"] = regression_pd["was_picked"].astype(int)
-    regression_pd["victory"] = regression_pd["victory"].astype(int)
-
     if "hp_ratio" not in regression_pd.columns:
         regression_pd = regression_pd[regression_pd["max_hp"] > 0]
         regression_pd["hp_ratio"] = regression_pd["current_hp"] / regression_pd["max_hp"]
