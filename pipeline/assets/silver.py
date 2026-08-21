@@ -1,8 +1,8 @@
 import dagster as dg
 from pyspark.sql import functions as F
 
-from sts_pipeline.assets.bronze import BRONZE_RUNS_DIR, bronze_runs
-from sts_pipeline.spark_resource import SparkResource
+from pipeline.assets.bronze import BRONZE_RUNS_DIR, bronze_runs
+from pipeline.spark_resource import SparkResource
 
 SILVER_PICKS_DIR = "raw_data/silver/picks"
 SILVER_CARD_OFFERS_DIR = "raw_data/silver/card_offers"

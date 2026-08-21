@@ -1,7 +1,7 @@
 import dagster as dg
 from pyspark.sql.functions import input_file_name
 
-from sts_pipeline.spark_resource import SparkResource
+from pipeline.spark_resource import SparkResource
 
 LANDING_DIR = "raw_data/landing"
 BRONZE_RUNS_DIR = "raw_data/bronze/runs"

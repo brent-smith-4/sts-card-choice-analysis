@@ -49,7 +49,7 @@ raw_data/landing   →  bronze_runs           one row per run, raw JSON as inges
 
 **gold** holds the tables built for analysis: a per-run summary, the card-choice long table (`was_picked` as the choice-model target, `floors_gained`/`victory` as outcome targets), and an equivalent table for boss-relic choices. Boss relics aren't tracked with a floor in the source data the way card picks are, so `gold_relic_offers` uses `boss_relic_tier` (0/1/2 = after the Act 1/2/3 boss) in place of a floor.
 
-Each asset is defined in `sts_pipeline/assets/` (`bronze.py`, `silver.py`, `gold.py`) and wired together in `sts_pipeline/definitions.py`.
+Each asset is defined in `pipeline/assets/` (`bronze.py`, `silver.py`, `gold.py`) and wired together in `pipeline/definitions.py`.
 
 ## Notebooks
 
@@ -67,13 +67,15 @@ The numbered notebooks are the analysis narrative, in order:
 ## Project structure
 
 ```
-sts_pipeline/
+pipeline/
   assets/
     bronze.py         bronze_runs
     silver.py          silver_picks, silver_card_offers
     gold.py             gold_run_summary, gold_card_choice_events, gold_relic_offers
   definitions.py       Dagster Definitions wiring the assets together
   spark_resource.py    local Spark session config (Delta Lake extensions, memory/partitions)
+analysis/                reusable collection/model-fitting helpers called from the notebooks
+  win_rate_modeling.py  Spark collection + per-card logistic regression fitting for 04
 notebooks/              numbered analysis notebooks + dev inspection notebooks
 raw_data/                landing/bronze/silver/gold data (gitignored, generated locally)
 ```
@@ -89,13 +91,13 @@ pip install -r requirements.txt
 With raw run JSON placed under `raw_data/landing/`, materialize the full pipeline (omitting `--select` runs every asset, in dependency order):
 
 ```
-dagster asset materialize -m sts_pipeline.definitions
+dagster asset materialize -m pipeline.definitions
 ```
 
 or an individual asset:
 
 ```
-dagster asset materialize -m sts_pipeline.definitions --select "gold_run_summary"
+dagster asset materialize -m pipeline.definitions --select "gold_run_summary"
 ```
 
 Notebooks read the materialized Delta tables directly from `raw_data/{bronze,silver,gold}/...` — see the setup cell at the top of any notebook for the environment variables it expects.

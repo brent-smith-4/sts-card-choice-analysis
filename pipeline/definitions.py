@@ -1,7 +1,7 @@
 import dagster as dg
 
-from sts_pipeline.assets import bronze, gold, silver
-from sts_pipeline.spark_resource import SparkResource
+from pipeline.assets import bronze, gold, silver
+from pipeline.spark_resource import SparkResource
 
 defs = dg.Definitions(
     assets=[

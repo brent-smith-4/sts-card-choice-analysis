@@ -418,6 +418,43 @@ correctness-affecting at the aggregate level.
 
 ---
 
+## 5. Project structure: `sts_pipeline` → `pipeline` + `analysis` split
+
+**Change.** Renamed the `sts_pipeline/` package to `pipeline/`, and added a new sibling package
+`analysis/` at the project root specifically for the reusable notebook-facing helpers from §4.9
+(`win_rate_modeling.py` moved there from the renamed `pipeline/`). Updated every internal import
+(`pipeline/definitions.py`, `pipeline/assets/{bronze,silver,gold}.py`,
+`analysis/win_rate_modeling.py`), `pyproject.toml`'s `[tool.dagster] module_name`, README's paths
+and CLI examples, and the two dev inspection notebooks' prose references to match. Every
+`sts_pipeline/...` path referenced earlier in this log (§1-§4) reflects the structure at the time
+those fixes were made — read those as historical, not as current paths.
+
+**Why the split.** `pipeline/` now holds only Dagster-materialized assets (bronze/silver/gold and
+their resources); `analysis/` holds helpers the notebooks call directly but that aren't part of
+the asset graph (per §4.9's reasoning for keeping them separate in the first place). Two top-level
+packages makes that boundary explicit instead of leaning on a subdirectory convention within one.
+
+**Unified the Spark builder while in there.** Also closed a real duplication risk noticed during
+the move: `win_rate_modeling.py`'s `collect_win_rate_regression_input` had its own inline
+`SparkSession.builder` chain, entirely separate from `pipeline/spark_resource.py`'s
+`SparkResource` (the one all three Dagster assets actually use). That meant a future shared-config
+change - like the driver-memory bump in `c67659f` - could be made to one and silently not
+propagate to the other, the same class of gap that caused §4.8's incident, just not yet triggered.
+Extended `SparkResource` with three optional fields the notebook path needs but the Dagster assets
+don't (`master`, `max_result_size`, `arrow_enabled`), defaulting to the assets' exact prior
+behavior (`local[*]`, no result-size cap, Arrow off) so `bronze_runs`/`silver_picks`/
+`silver_card_offers`/`gold_*` are provably unaffected - confirmed by checking that `SparkResource`
+is only ever instantiated once, with zero args, in `pipeline/definitions.py`.
+`collect_win_rate_regression_input` now constructs
+`SparkResource(master="local[4]", max_result_size="6g", arrow_enabled=True, ...)` and calls
+`.get_spark()` instead of building its own session from scratch.
+
+**Left alone.** `pyproject.toml`'s `[project] name = "sts-pipeline"` (the distribution metadata
+name, unrelated to the importable package name) wasn't changed - only the actual `sts_pipeline`
+import path was in scope here.
+
+---
+
 ## Recurring lessons
 
 - **`groupby().apply()` + heterogeneous return branches is a repeat offender** (§4.2, §4.5).

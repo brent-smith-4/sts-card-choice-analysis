@@ -1,6 +1,6 @@
 """Reusable data-collection and per-group model-fitting helpers for the analysis notebooks.
 
-Kept separate from sts_pipeline/assets/ - these aren't Dagster-materialized pipeline assets,
+Kept separate from pipeline/assets/ - these aren't Dagster-materialized pipeline assets,
 they're helpers the analysis notebooks call directly, so the notebook itself can stay a
 readable record of what was decided and why rather than the mechanics of how the data got
 collected and fit.
@@ -38,21 +38,22 @@ def collect_win_rate_regression_input(project_root: Path, gold_path: str, output
     disk-swap incident (see FIXLOG.md 4.8).
     """
     _configure_spark_env(project_root)
-    from delta import configure_spark_with_delta_pip
-    from pyspark.sql import SparkSession
     from pyspark.sql import functions as F
 
-    builder = (
-        SparkSession.builder.master("local[4]")
-        .appName("win-rate-logistic-regression")
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.driver.memory", "16g")
-        .config("spark.driver.maxResultSize", "6g")
-        .config("spark.sql.shuffle.partitions", "100")
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
-    )
-    spark = configure_spark_with_delta_pip(builder).getOrCreate()
+    from pipeline.spark_resource import SparkResource
+
+    # local[4] rather than SparkResource's local[*] default - full parallelism here competes
+    # with the memory-heavy per-character collection loop below for the same machine (see
+    # FIXLOG.md 4.8). maxResultSize/arrow are notebook-specific too; none of these three
+    # override the Dagster assets' defaults, which stay on SparkResource's class defaults.
+    spark = SparkResource(
+        app_name="win-rate-logistic-regression",
+        driver_memory="16g",
+        shuffle_partitions=100,
+        master="local[4]",
+        max_result_size="6g",
+        arrow_enabled=True,
+    ).get_spark()
     try:
         df = spark.read.format("delta").load(gold_path)
         print(f"Loaded {gold_path}")
