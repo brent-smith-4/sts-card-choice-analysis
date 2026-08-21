@@ -2,6 +2,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Card preview images hotlink from the wiki's CDN; warming the DNS/TLS handshake to that
+     host on page load means the first hover only pays for the image download itself, not
+     also the connection setup (usually the bigger chunk of that first-hover delay). No effect
+     in a context with a strict CSP (e.g. this page previewed as a Claude Artifact), where the
+     browser blocks the preconnect the same way it blocks the image requests themselves. -->
+<link rel="preconnect" href="https://static.wikia.nocookie.net" crossorigin>
 <style>
   :root {
     color-scheme: light;
