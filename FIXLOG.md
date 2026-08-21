@@ -373,6 +373,49 @@ false discoveries the FDR correction is designed to filter, and trivial-effect-s
 happened to be significant only because of sample size — all now excluded by design, not lost to
 a bug.
 
+### 4.9 Notebook 04 split into `sts_pipeline/win_rate_modeling.py`
+
+**Motivation.** Not a bug fix — a structural change to keep future collection/modeling work
+reusable and keep the notebook itself readable as a record of *decisions* (what's excluded and
+why, what counts as significant and why) rather than *mechanics* (Spark session setup, the
+per-group fit loop, FDR bookkeeping).
+
+**Split.** Moved into `sts_pipeline/win_rate_modeling.py`: `collect_win_rate_regression_input` (Spark env
+setup, the per-character chunked collection from §4.3, caching to parquet, stopping Spark
+internally per §4.8), `load_win_rate_regression_input` (the pyarrow `self_destruct=True` read
+from §4.8's follow-on, dtype downcast from §4.4), `fit_card_logit` (the per-group fit with the
+convergence check from §4.6.1), and `fit_all_card_logits` (the `groupby().apply()` orchestration
+plus the Benjamini-Hochberg correction from §4.6.2, since every model in a run needs the
+correction applied together — it isn't a per-card decision). Kept in the notebook: calling those
+functions, building `significant` (the converged/qvalue/effect-size threshold decisions from
+§4.6, which stay next to the markdown narrating them), the summary/top/bottom breakdowns, and
+the CSV/parquet output writes. `sts_pipeline` isn't pip-installed in this venv, so the notebook's
+setup cell now does `sys.path.insert(0, str(PROJECT_ROOT))` before importing it — Dagster gets
+this for free by always running from the project root, notebooks don't.
+
+**Bug caught during the split: the raw cache had already been corrupted.** While designing
+`load_win_rate_regression_input`, tracing what the old final save cell did turned up a real bug:
+it resaved `regression_pd` back onto the *same path* it was read from, but by that point
+`hp_ratio` had been derived and `current_hp`/`max_hp` dropped. Checking the actual file on disk
+confirmed it: `raw_data/win_rate_regression_input.parquet` had already lost `current_hp`/`max_hp`
+from a prior full run, which would have made the very next `pd.read_parquet(...).astype()` /
+`current_hp / max_hp` line in the old notebook raise a `KeyError` on its next execution. Fixed
+two ways: `load_win_rate_regression_input` now checks whether `hp_ratio` is already present and
+skips re-deriving it if so (so the already-corrupted cache still loads correctly, without forcing
+a costly Spark re-collection just to repair it), and the final save cell no longer resaves
+`regression_pd` onto the raw cache path at all — only `results_pd` (genuinely new output each
+run) gets saved there now.
+
+**Known side effect of the workaround.** Because the defensive load path uses the cache's
+already-computed `hp_ratio` (which has been through one float32 round-trip) rather than
+re-deriving it fresh from `current_hp`/`max_hp`, a couple of small, borderline-separation card
+groups (`n` in the low hundreds) shifted in or out of `significant` between runs - not from any
+change in logic, just a tiny floating-point difference landing on the other side of a
+convergence boundary for those specific groups. Overall counts (2,231 fitted, 2,221 converged,
+824 significant) were unchanged. A one-time clean Spark re-collection would flush the corrupted
+cache and remove this sensitivity entirely; not done as part of this pass since it isn't
+correctness-affecting at the aggregate level.
+
 ---
 
 ## Recurring lessons
