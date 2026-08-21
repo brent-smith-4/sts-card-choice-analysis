@@ -557,6 +557,10 @@
     setTimeout(function () {
       Object.keys(wikiImgData).forEach(function (card) {
         var img = new Image();
+        // Must match #cardPreviewImg's referrer policy - the wiki's CDN 404s hotlinked
+        // requests that carry a Referer header, and the browser caches that 404 against
+        // the URL regardless of which element requested it, poisoning the later real hover.
+        img.referrerPolicy = "no-referrer";
         img.src = wikiImgData[card];
       });
     }, 300);
